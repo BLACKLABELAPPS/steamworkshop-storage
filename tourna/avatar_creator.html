@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Steampunk Pixel Generator Corregido</title>
+<style>
+*{box-sizing:border-box}
+html,body{
+  margin:0;width:100%;height:100%;overflow:hidden;
+  background:radial-gradient(circle at 20% 10%,#2b241a,#0b0e13 58%,#040509);
+  display:grid;place-items:center;font-family:Arial,Helvetica,sans-serif
+}
+.wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:18px}
+canvas{
+  width:min(78vmin,520px);height:min(78vmin,520px);
+  image-rendering:pixelated;image-rendering:crisp-edges;
+  background:#121720;border-radius:18px;
+  box-shadow:0 28px 90px rgba(0,0,0,.66),inset 0 0 0 1px rgba(255,255,255,.06)
+}
+.controls{display:flex;gap:12px;width:min(78vmin,520px);align-items:stretch}
+button{
+  flex:1;border:0;border-radius:16px;padding:16px 14px;
+  cursor:pointer;font-size:16px;font-weight:900;transition:.14s ease;
+  box-shadow:0 14px 40px rgba(0,0,0,.35)
+}
+button:hover{transform:translateY(-1px);filter:brightness(1.05)}
+button:active{transform:translateY(1px)}
+#generate{color:#03110d;background:linear-gradient(135deg,#63ffe6,#d8fff9);flex:0 0 150px}
+#codeBox{
+  flex:1;min-height:72px;max-height:120px;resize:vertical;
+  border:0;outline:none;border-radius:14px;padding:12px 14px;
+  background:#0f141d;color:#d8e2f1;
+  box-shadow:0 12px 30px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.06);
+  font-size:14px;font-weight:700;letter-spacing:.02em
+}
+#codeBox.ok{box-shadow:0 12px 30px rgba(0,0,0,.28), inset 0 0 0 2px rgba(99,255,230,.5)}
+#codeBox.bad{box-shadow:0 12px 30px rgba(0,0,0,.28), inset 0 0 0 2px rgba(240,75,69,.55)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="art"></canvas>
+  <div class="controls">
+    <textarea id="codeBox" spellcheck="false" placeholder="Escribe o pega aquí el código (usa C0 a C10) y la imagen se recreará sola"></textarea>
+    <button id="generate">Generar</button>
+  </div>
+</div>
+<script>
+const GRID=40,SCALE=12;
+const BODY_COUNT=1000;
+const TURRET_COUNT=50;
+const WEAPON_COUNT=50;
+const ARM_COUNT=50;
+const LOCOMOTION_COUNT=5;
+const ANTENNA_COUNT=50;
+const MODULE_COUNT=50;
+const ACCESSORY_COUNT=50;
+const FRAME_COUNT=100;
+
+const canvas=document.getElementById('art');
+const ctx=canvas.getContext('2d',{alpha:false});
+canvas.width=GRID*SCALE; canvas.height=GRID*SCALE; ctx.imageSmoothingEnabled=false;
+const btnGenerate=document.getElementById('generate');
+const codeBox=document.getElementById('codeBox');
+
+class RNG{
+  constructor(seed){this.seed=seed>>>0}
+  next(){let x=this.seed; x^=x<<13; x^=x>>>17; x^=x<<5; this.seed=x>>>0; return (this.seed%1000000)/1000000}
+  int(n){return Math.floor(this.next()*n)}
+  bool(p=.5){return this.next()<p}
+  range(a,b){return a+this.next()*(b-a)}
+  pick(arr){return arr[this.int(arr.length)]}
+}
+const H=s=>{const n=parseInt(s.replace('#',''),16); return {r:n>>16&255,g:n>>8&255,b:n&255,a:1}};
+const CSS=c=>`rgba(${c.r|0},${c.g|0},${c.b|0},${c.a??1})`;
+const MIX=(a,b,t)=>({r:a.r+(b.r-a.r)*t,g:a.g+(b.g-a.g)*t,b:a.b+(b.b-a.b)*t,a:(a.a??1)+((b.a??1)-(a.a??1))*t});
+const SAME=(a,b)=>!!a&&!!b&&(a.r|0)===(b.r|0)&&(a.g|0)===(b.g|0)&&(a.b|0)===(b.b|0);
+
+// Colores de equipo: C0 a C10
+// C0 gris, C1 verde, C2 rojo, C3 azul, C4 amarillo,
+// C5 cyan, C6 blanco, C7 negro, C8 rosado, C9 anaranjado, C10 morado
+const TEAM_COLORS=[
+  '#9aa0a6', // C0 gris
+  '#48d05f', // C1 verde
+  '#f04b45', // C2 rojo
+  '#3f7dff', // C3 azul
+  '#f0d84a', // C4 amarillo
+  '#38d8e8', // C5 cyan
+  '#f2f3e8', // C6 blanco
+  '#111111', // C7 negro
+  '#ff67b3', // C8 rosado
+  '#f28a35', // C9 anaranjado
+  '#a75cff'  // C10 morado
+];
+
+function derivePalette(teamHex){
+  const team=H(teamHex), black=H('#05070b'), white=H('#ffffff');
+  return [
+    MIX(team,H('#8b5a2b'),0.15),
+    MIX(team,black,0.50),
+    MIX(team,black,0.72),
+    MIX(team,H('#d2b48c'),0.35),
+    MIX(team,white,0.58),
+    MIX(team,H('#ffd27a'),0.32)
+  ];
+}
+
+function badgeTextColor(teamIndex){
+  // texto oscuro para colores claros, texto claro para colores oscuros
+  return [0,2,3,7,9,10].includes(teamIndex) ? '#ffffff' : '#111111';
+}
+
+function createBodyRecipe(id){
+  return {
+    id,
+    hullType:id%12,
+    cabinType:Math.floor(id/12)%10,
+    frontShape:Math.floor(id/120)%10,
+    rearShape:Math.floor(id/37)%10,
+    deckType:Math.floor(id/53)%10,
+    boilerCount:1+(id%3),
+    chimneyCount:1+(Math.floor(id/7)%4),
+    chimneyStyle:Math.floor(id/29)%6,
+    rivetPattern:Math.floor(id/17)%8,
+    steamTank:Math.floor(id/31)%6,
+    sidePods:Math.floor(id/19)%6,
+    width:12+(id%9),
+    height:5+(Math.floor(id/11)%6),
+    stance:Math.floor(id/23)%8,
+    roofCurve:Math.floor(id/41)%6,
+    cockpitLift:Math.floor(id/13)%5,
+    asym:((Math.floor(id/97)%5)-2),
+    braceType:Math.floor(id/43)%7,
+    ornament:Math.floor(id/59)%8
+  };
+}
+
+function createTurrets(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    shape:i%10, w:5+(i%6)*2, h:3+Math.floor(i/10),
+    offsetX:((i%9)-4)*0.7, lift:1+(Math.floor(i/5)%4),
+    cupola:i%5, rearBox:Math.floor(i/8)%4, ring:i%4
+  });
+  return arr;
+}
+
+function createWeapons(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    style:i%10,
+    len:6+(i%8),
+    thick:1+Math.floor(i/20),
+    barrels:1+(i%3),
+    angle:(i%7)-3,
+    muzzle:i%5,
+    brace:Math.floor(i/10),
+    mount:Math.floor(i/5)%5,
+    shield:Math.floor(i/25)
+  });
+  return arr;
+}
+
+function createArms(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    style:i%10,
+    joints:1+(i%3),
+    reach:5+(i%8),
+    sideMode:Math.floor(i/10),
+    tool:Math.floor(i/5)%10,
+    shoulderLift:Math.floor(i/25),
+    elbowBias:(i%5)-2
+  });
+  return arr;
+}
+
+function createLocomotion(){
+  return [
+    {style:0,label:'wheels'},
+    {style:1,label:'tracks'},
+    {style:2,label:'spider-legs'},
+    {style:3,label:'biped-legs'},
+    {style:4,label:'hover'}
+  ];
+}
+
+function createAntennas(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    style:i%10,count:1+(i%4),height:4+(i%8),
+    spread:2+(Math.floor(i/5)%5),bias:((i%5)-2)
+  });
+  return arr;
+}
+
+function createModules(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    type:i%10, count:1+Math.floor(i/13), w:2+(i%4),
+    h:1+Math.floor((i%6)/2), spread:2+((i*3)%5), elevation:Math.floor(i/17)
+  });
+  return arr;
+}
+
+function createAccessories(){
+  const arr=[];
+  for(let i=0;i<50;i++) arr.push({
+    mode:i%10,count:2+(i%5),span:3+(Math.floor(i/6)%6),
+    glow:(i%3)===0,sidePods:(i%4),steam:Math.floor(i/8)%4
+  });
+  return arr;
+}
+
+function createFrames(){
+  const arr=[];
+  for(let i=0;i<100;i++) arr.push({
+    style:i%10,inset:1+(Math.floor(i/10)%3),thickness:1+(Math.floor(i/20)%2),
+    corners:Math.floor(i/5)%5,bolts:2+(i%6),sideDetail:Math.floor(i/7)%6,
+    arch:Math.floor(i/9)%5,glow:(i%4)===0
+  });
+  return arr;
+}
+
+const TURRETS=createTurrets();
+const WEAPONS=createWeapons();
+const ARMS=createArms();
+const LOCOMOTIONS=createLocomotion();
+const ANTENNAS=createAntennas();
+const MODULES=createModules();
+const ACCESSORIES=createAccessories();
+const FRAMES=createFrames();
+
+function seedForCombo(c){
+  let x=(
+    c.body*73856093 ^ c.turret*19349663 ^ c.weapon*83492791 ^ c.arm*1299721 ^
+    c.locomotion*2654435761 ^ c.antenna*97531 ^ c.module*314159 ^
+    c.accessory*271828 ^ c.frame*1597334677 ^ c.team*1013904223
+  )>>>0;
+  x^=x<<13; x^=x>>>17; x^=x<<5; return x>>>0;
+}
+
+class Machine{
+  constructor(combo){
+    this.combo=combo;
+    this.r=new RNG(seedForCombo(combo));
+    this.body=createBodyRecipe(combo.body);
+    this.turret=TURRETS[combo.turret];
+    this.weapon=WEAPONS[combo.weapon];
+    this.arm=ARMS[combo.arm];
+    this.locomotion=LOCOMOTIONS[combo.locomotion];
+    this.antenna=ANTENNAS[combo.antenna];
+    this.module=MODULES[combo.module];
+    this.accessory=ACCESSORIES[combo.accessory];
+    this.frame=FRAMES[combo.frame];
+
+    this.bgA=H('#121720'); this.bgB=H('#19212c'); this.black=H('#05070b');
+    this.teamIndex=combo.team;
+    this.teamHex=TEAM_COLORS[combo.team];
+    const p=derivePalette(this.teamHex);
+    [this.base,this.dark,this.shadow,this.light,this.edge,this.glow]=p;
+    this.brass=H('#c49742'); this.iron=H('#6a6460'); this.steam=H('#b9c8d8');
+    this.p=Array.from({length:GRID},()=>Array(GRID).fill(null));
+    this.meta={cx:20,cy:23,w:18,h:8,turretX:20,turretY:18};
+  }
+
+  gen(){
+    this.background();
+    this.drawFrame();
+    this.drawBody();
+    this.drawTurret();
+    this.drawWeapon();
+    this.drawArms();
+    this.drawLocomotion();
+    this.drawAntennas();
+    this.drawModules();
+    this.drawAccessories();
+    this.texture();
+    this.damage();
+    this.shade();
+    this.outline();
+    this.render();
+  }
+
+  background(){
+    for(let y=0;y<GRID;y++) for(let x=0;x<GRID;x++) this.p[y][x]=(((x>>2)+(y>>2))%2===0)?this.bgA:this.bgB;
+    if(this.r.bool(.25)) for(let i=0;i<10+this.r.int(15);i++) this.set(this.r.int(40),this.r.int(16),MIX(this.bgB,this.iron,this.r.range(.12,.25)));
+  }
+
+  drawFrame(){
+    const f=this.frame,left=f.inset,top=f.inset,right=GRID-1-f.inset,bottom=GRID-1-f.inset,th=f.thickness;
+    for(let t=0;t<th;t++){
+      const l=left+t,r=right-t,tp=top+t,b=bottom-t;
+      this.rect(l,tp,r-l+1,1,this.dark); this.rect(l,b,r-l+1,1,this.dark);
+      this.rect(l,tp,1,b-tp+1,this.dark); this.rect(r,tp,1,b-tp+1,this.dark);
+    }
+    if([0,1,4,8].includes(f.style)){
+      this.rect(left+th,top+th,right-left+1-th*2,1,this.brass); this.rect(left+th,bottom-th,right-left+1-th*2,1,this.brass);
+      this.rect(left+th,top+th,1,bottom-top+1-th*2,this.brass); this.rect(right-th,top+th,1,bottom-top+1-th*2,this.brass);
+    }
+    for(let i=0;i<f.bolts;i++){
+      const px=left+2+Math.floor((right-left-4)*i/Math.max(1,f.bolts-1));
+      const py=top+2+Math.floor((bottom-top-4)*i/Math.max(1,f.bolts-1));
+      this.set(px,top,this.edge); this.set(px,bottom,this.edge); this.set(left,py,this.edge); this.set(right,py,this.edge);
+    }
+    const corner=(cx,cy,sx,sy)=>{
+      if(f.corners===0)this.rect(cx,cy,2,2,this.brass);
+      if(f.corners===1){this.line(cx,cy,cx+sx*2,cy,this.light); this.line(cx,cy,cx,cy+sy*2,this.light);}
+      if(f.corners===2)this.circle(cx,cy,1,this.glow);
+      if(f.corners===3)this.tri(cx,cy,cx+sx*2,cy,cx,cy+sy*2,this.brass);
+      if(f.corners===4){this.rect(cx,cy,2,2,this.dark); this.set(cx+sx,cy,this.edge); this.set(cx,cy+sy,this.edge);}
+    };
+    corner(left,top,1,1); corner(right,top,-1,1); corner(left,bottom,1,-1); corner(right,bottom,-1,-1);
+  }
+
+  drawBody(){
+    const b=this.body,cx=20+b.asym*.5,cy=22+((b.stance%3)-1),w=Math.min(28,b.width),h=Math.min(11,b.height),x=cx-w/2,y=cy-h/2;
+    switch(b.hullType){
+      case 0:this.rect(x,y,w,h,this.base);break;
+      case 1:this.rect(x+2,y,w-4,h,this.base); this.tri(x,y+h-1,x+4,y+1,x+4,y+h-1,this.base); this.tri(x+w,y+h-1,x+w-4,y+1,x+w-4,y+h-1,this.base);break;
+      case 2:this.rect(x,y+1,w,h-1,this.base); this.rect(x+3,y,w-6,2,this.light);break;
+      case 3:this.rect(x,y+1,w,h-1,this.base); this.tri(x,y+1,cx,y-3,x+w,y+1,this.base);break;
+      case 4:this.rect(x+1,y,w-2,h,this.base); this.rect(x-1,y+2,w+2,h-3,this.base);break;
+      case 5:this.rect(x,y+2,w,h-2,this.base); this.tri(x,y+2,x+5,y-1,cx,y+2,this.base); this.tri(x+w,y+2,x+w-5,y-1,cx,y+2,this.base);break;
+      case 6:this.rect(x,y,w,h,this.base); this.rect(x+2,y+1,w-4,h-3,this.dark); this.rect(x+3,y+2,w-6,1,this.light);break;
+      case 7:this.tri(x,y+h,cx,y,x+w,y+h,this.base); this.rect(x+2,y+h-2,w-4,2,this.base);break;
+      case 8:this.rect(x,y+1,w,h-1,this.base); this.arc(cx,y+1,Math.floor(w/2),-Math.PI,0,this.light,.35);break;
+      case 9:this.rect(x,y,w,h,this.base); this.rect(x+w*.15,y-2,w*.7,2,this.dark); this.rect(x+w*.22,y-4,w*.52,2,this.light);break;
+      case 10:this.rect(x+1,y,w-2,h,this.base); this.tri(x,y+h-1,x+6,y-1,cx,y+h-1,this.base); this.tri(x+w,y+h-1,x+w-6,y-1,cx,y+h-1,this.base);break;
+      case 11:this.rect(x,y+1,w,h-1,this.base); this.rect(x+1,y,w-2,2,this.light); this.tri(x+1,y,x+5,y-3,cx,y,this.light);break;
+    }
+    // body details
+    const cabY=y-b.cockpitLift, cabX=cx+(b.cabinType%3-1)*2;
+    if(b.cabinType===0)this.rect(cabX-2,cabY-2,4,2,this.dark);
+    if(b.cabinType===1){this.rect(cabX-3,cabY-2,6,2,this.dark); this.rect(cabX-1,cabY-4,2,2,this.light);}
+    if(b.cabinType===2)this.tri(cabX-3,cabY,cabX,cabY-3,cabX+3,cabY,this.dark);
+    if(b.cabinType===3)this.circle(cabX,cabY-1,2,this.dark);
+    if(b.cabinType===4){this.rect(cabX-2,cabY-3,4,3,this.dark); this.set(cabX,cabY-4,this.glow);}
+    if(b.cabinType===5){this.rect(cabX-4,cabY-2,8,2,this.dark); this.rect(cabX-1,cabY-4,2,2,this.brass);}
+    if(b.cabinType===6){this.rect(cabX-2,cabY-2,4,2,this.light); this.rect(cabX-1,cabY-4,2,2,this.dark);}
+    if(b.cabinType===7)this.arc(cabX,cabY,4,-Math.PI,0,this.dark,.45);
+    if(b.cabinType===8){this.rect(cabX-3,cabY-1,6,1,this.dark); this.line(cabX,cabY-1,cabX,cabY-4,this.edge);}
+    if(b.cabinType===9){this.rect(cabX-2,cabY-2,4,2,this.dark); this.circle(cabX+3,cabY-1,1,this.glow);}
+
+    if(b.roofCurve===0)this.rect(cx-4,y-1,8,1,this.light);
+    if(b.roofCurve===1)this.arc(cx,y-1,5,-Math.PI,0,this.brass,.35);
+    if(b.roofCurve===2)this.line(cx-5,y,cx+5,y-1,this.edge);
+    if(b.roofCurve===3)this.line(cx-5,y-1,cx+5,y,this.edge);
+    if(b.roofCurve===4)this.tri(cx-4,y,cx,y-3,cx+4,y,this.light);
+    if(b.roofCurve===5){this.rect(cx-5,y-1,10,1,this.dark); this.set(cx,y-2,this.edge);}
+
+    for(let i=0;i<b.boilerCount;i++){ const bx=cx-((b.boilerCount-1)*3)/2+i*3, by=y+1+(i%2); this.circle(bx,by+2,2,this.iron); this.circle(bx,by+2,1,this.base); }
+    for(let i=0;i<b.chimneyCount;i++){
+      const bx=cx-((b.chimneyCount-1)*3)/2+i*3+(b.chimneyStyle%2?1:0), bh=3+((b.chimneyStyle+i)%4), by=y-1-bh;
+      if(b.chimneyStyle===0||b.chimneyStyle===1)this.rect(bx,by,2,bh+1,this.shadow);
+      if(b.chimneyStyle===2){this.rect(bx,by+1,2,bh,this.shadow); this.rect(bx-1,by,4,1,this.brass);}
+      if(b.chimneyStyle===3){this.rect(bx,by,2,bh,this.shadow); this.rect(bx,by+bh,2,2,this.brass);}
+      if(b.chimneyStyle===4){this.rect(bx,by+1,2,bh,this.iron); this.rect(bx-1,by,4,1,this.light);}
+      if(b.chimneyStyle===5){this.rect(bx,by,2,bh,this.dark); this.rect(bx-1,by+bh-1,4,2,this.brass);}
+    }
+    for(let i=0;i<b.sidePods;i++){ const py=y+1+(i%Math.max(1,h-2)); this.rect(x-2,py,2,1,this.shadow); this.rect(x+w,py,2,1,this.shadow); }
+    for(let i=0;i<2+b.rivetPattern;i++){ const rx=x+1+i*Math.max(1,Math.floor((w-2)/(2+b.rivetPattern))); this.set(rx,y+1,this.edge); if(this.r.bool(.65)) this.set(rx,y+h-1,this.edge); }
+    if(b.braceType===0){this.line(x+2,y+h-1,cx,y+1,this.dark); this.line(x+w-2,y+h-1,cx,y+1,this.dark);} 
+    if(b.braceType===1)this.rect(x+2,y+h-1,w-4,1,this.shadow);
+    if(b.braceType===2)this.line(x+2,y+1,x+w-2,y+h-1,this.dark);
+    if(b.braceType===3)this.line(x+w-2,y+1,x+2,y+h-1,this.dark);
+    if(b.braceType===4)this.rect(cx-1,y+1,2,h-2,this.shadow);
+    if(b.braceType===5)this.arc(cx,y+h-1,Math.floor(w/3),Math.PI,Math.PI*2,this.dark,.3);
+    if(b.braceType===6)this.rect(x+2,y+2,w-4,1,this.brass);
+    if(b.ornament===0)this.circle(cx,y-4,1,this.glow);
+    if(b.ornament===1)this.rect(cx-2,y-4,4,1,this.brass);
+    if(b.ornament===2){this.line(cx,y-4,cx,y-7,this.edge); this.circle(cx,y-8,1,this.glow);}
+    if(b.ornament===3)this.arc(cx,y-3,4,-Math.PI,0,this.edge,.45);
+    if(b.ornament===4)this.rect(cx-1,y-5,2,2,this.light);
+    if(b.ornament===5)this.tri(cx-3,y-2,cx,y-5,cx+3,y-2,this.brass);
+    if(b.ornament===6){this.rect(cx-4,y-3,8,1,this.shadow); this.set(cx,y-4,this.glow);}
+    if(b.ornament===7){this.circle(cx-3,y-3,1,this.brass); this.circle(cx+3,y-3,1,this.brass);}
+    this.meta={cx,cy,w,h,turretX:cx,turretY:y,turretCenterX:cx,turretCenterY:y};
+  }
+
+  drawTurret(){
+    const o=this.turret,cx=this.meta.cx+o.offsetX,cy=this.meta.turretY-o.lift,w=o.w,h=o.h,x=cx-w/2,y=cy-h;
+    switch(o.shape){
+      case 0:this.rect(x,y,w,h,this.base);break;
+      case 1:this.rect(x+1,y,w-2,h,this.base); this.tri(x,y+h,x+2,y,x+2,y+h,this.base); this.tri(x+w,y+h,x+w-2,y,x+w-2,y+h,this.base);break;
+      case 2:this.rect(x,y+1,w,h-1,this.base); this.rect(x+2,y,w-4,2,this.light);break;
+      case 3:this.circle(cx,y+h/2,Math.max(2,Math.floor(w/3)),this.base); this.rect(x+1,y+h/2,w-2,Math.max(2,h/2),this.base);break;
+      case 4:this.rect(x,y,w,h,this.dark); this.rect(x+1,y+1,w-2,h-2,this.base);break;
+      case 5:this.tri(x,y+h,cx,y,x+w,y+h,this.base); this.rect(cx-2,y+h-1,4,2,this.base);break;
+      case 6:this.rect(x,y,w,h,this.base); this.rect(x+1,y+1,w-2,1,this.light); this.rect(x+2,y+2,w-4,1,this.shadow);break;
+      case 7:this.rect(x+1,y,w-2,h,this.base); this.rect(x,y+1,w,h-2,this.base);break;
+      case 8:this.rect(x,y+1,w,h-1,this.base); this.arc(cx,y+1,Math.floor(w/2),-Math.PI,0,this.light,.45);break;
+      case 9:this.rect(x,y,w,h,this.base); this.rect(cx-1,y-2,2,2,this.glow);break;
+    }
+    if(o.rearBox===0)this.rect(x-2,y+1,2,h-1,this.shadow);
+    if(o.rearBox===1)this.rect(x+w,y+1,2,h-1,this.shadow);
+    if(o.rearBox===2){this.rect(x-2,y+1,2,h-1,this.shadow); this.rect(x+w,y+1,2,h-1,this.shadow)}
+    if(o.rearBox===3)this.rect(cx-2,y+h,4,2,this.dark);
+    if(o.cupola===0)this.circle(cx,y,1,this.edge);
+    if(o.cupola===1)this.rect(cx-1,y-1,2,2,this.glow);
+    if(o.cupola===2)this.rect(cx-2,y-1,4,1,this.light);
+    if(o.cupola===3)this.line(cx,y-1,cx,y-4,this.edge);
+    if(o.cupola===4){this.rect(cx-2,y-1,4,2,this.dark); this.set(cx,y-2,this.glow)}
+    if(o.ring===0)this.rect(cx-3,y+h,6,1,this.brass);
+    if(o.ring===1)this.arc(cx,y+h,4,Math.PI,Math.PI*2,this.brass,.35);
+    if(o.ring===2)this.rect(cx-4,y+h,8,1,this.shadow);
+    if(o.ring===3){this.set(cx-3,y+h,this.edge); this.set(cx+3,y+h,this.edge)}
+    this.meta.turretCenterX=cx; this.meta.turretCenterY=y+h/2;
+  }
+
+  drawWeapon(){
+    const o=this.weapon, dir=(o.style%2===0)?1:-1, x=this.meta.turretCenterX+(dir>0?Math.floor(this.turret.w/2):-Math.floor(this.turret.w/2)), y=this.meta.turretCenterY+o.mount-2;
+    const len=o.len, endX=x+dir*len, endY=y+o.angle, thick=o.thick;
+    const drawBarrel=(offset)=>{
+      if(o.style===0){ for(let t=0;t<thick;t++) this.line(x,y+t+offset,endX,endY+t+offset,this.shadow); }
+      if(o.style===1){ this.rect(x,y-1+offset,dir*len,thick+1,this.dark); }
+      if(o.style===2){ this.line(x,y+offset,endX,endY+offset,this.edge); this.line(x,y+1+offset,endX,endY+1+offset,this.shadow); }
+      if(o.style===3){ this.rect(x,y+offset,dir*Math.floor(len*.7),thick,this.shadow); this.line(x+dir*Math.floor(len*.7),y+offset,endX,endY+offset,this.edge); }
+      if(o.style===4){ this.line(x,y+offset,endX,endY+offset,this.shadow); this.rect(endX,y-1+offset,dir*2,3,this.brass); }
+      if(o.style===5){ this.rect(x,y-1+offset,dir*Math.floor(len*.55),thick+1,this.dark); this.rect(x+dir*Math.floor(len*.55),y+offset,dir*Math.floor(len*.45),1,this.edge); }
+      if(o.style===6){ this.arc(x+dir*2,y+offset,Math.floor(len*.7),dir>0?-0.6:2.5,dir>0?0.6:3.7,this.light,.35); }
+      if(o.style===7){ this.rect(x,y+offset,dir*len,1,this.shadow); for(let s=0;s<3;s++) this.set(x+dir*(2+s*3),y+offset+1,this.light); }
+      if(o.style===8){ this.line(x,y+offset,endX,endY+offset,this.edge); this.circle(endX,endY+offset,1,this.glow); }
+      if(o.style===9){ this.rect(x,y-1+offset,dir*3,3,this.dark); this.line(x+dir*3,y+offset,endX,endY+offset,this.brass); }
+    };
+    if(o.barrels===1) drawBarrel(0);
+    if(o.barrels===2){ drawBarrel(-1); drawBarrel(1); }
+    if(o.barrels===3){ drawBarrel(-2); drawBarrel(0); drawBarrel(2); }
+    if(o.shield===1){ this.rect(x-dir*1,y-2,dir*4,5,this.base); this.rect(x-dir*1,y-2,dir*4,1,this.brass); }
+    if(o.brace===0)this.line(x,y,x+dir*3,y+2,this.dark);
+    if(o.brace===1)this.line(x,y,x+dir*4,y-2,this.dark);
+    if(o.brace===2)this.rect(x,y+1,dir*4,1,this.brass);
+    if(o.brace===3)this.line(x,y,x+dir*5,y,this.iron);
+    if(o.brace===4)this.arc(x+dir*2,y,3,dir>0?2.2:-0.2,dir>0?3.8:1.4,this.brass,.45);
+    if(o.muzzle===0)this.rect(endX-dir*1,endY-1,dir*2,2,this.dark);
+    if(o.muzzle===1)this.circle(endX,endY,1,this.edge);
+    if(o.muzzle===2)this.rect(endX-dir*1,endY,dir*3,1,this.glow);
+    if(o.muzzle===3)this.rect(endX-dir*1,endY-1,dir*2,3,this.shadow);
+    if(o.muzzle===4){this.circle(endX,endY,1,this.glow); this.set(endX+dir,endY,this.edge);}
+  }
+
+  drawArms(){
+    const o=this.arm;
+    const sides = o.sideMode===0 ? [-1] : o.sideMode===1 ? [1] : [-1,1];
+    const baseY = this.meta.cy - Math.floor(this.meta.h/4) - o.shoulderLift;
+    for(const side of sides){
+      const sx = this.meta.cx + side*(Math.floor(this.meta.w/2)-1);
+      const sy = baseY;
+      let x=sx, y=sy;
+      for(let j=0;j<o.joints;j++){
+        const nx = x + side*(2 + Math.floor(o.reach/(o.joints+1)) + (j===0?o.elbowBias:0));
+        const ny = y + (j%2===0 ? 2 : 4);
+        if(o.style===0||o.style===1){this.line(x,y,nx,ny,this.dark);}
+        if(o.style===2){this.rect(x,y,side*(Math.abs(nx-x)||1),1,this.iron); this.line(nx,y,nx,ny,this.iron);}
+        if(o.style===3){this.line(x,y,nx,ny,this.brass); this.circle(nx,ny,1,this.iron);}
+        if(o.style===4){this.line(x,y,nx,ny,this.shadow); this.rect(nx-1,ny-1,2,2,this.brass);}
+        if(o.style===5){this.line(x,y,nx,ny,this.edge); this.line(x,y+1,nx,ny+1,this.shadow);}
+        if(o.style===6){this.rect(x,y,side*(Math.abs(nx-x)||1),1,this.dark); this.line(nx,y,nx,ny,this.brass);}
+        if(o.style===7){this.line(x,y,nx,ny,this.iron);}
+        if(o.style===8){this.arc(x+side*1,y+1,3,side>0?-0.4:2.7,side>0?1.1:4.0,this.brass,.45); this.line(x+side*3,y+1,nx,ny,this.dark);}
+        if(o.style===9){this.line(x,y,nx,ny,this.dark); this.set((x+nx)>>1,(y+ny)>>1,this.glow);}
+        x=nx; y=ny;
+      }
+      // end tool
+      if(o.tool===0){this.line(x,y,x+side*2,y+1,this.shadow); this.line(x,y,x+side*2,y-1,this.shadow);} // pincer
+      if(o.tool===1){this.circle(x+side*1,y,1,this.brass); this.line(x,y,x+side*3,y,this.brass);} // drill
+      if(o.tool===2){this.arc(x+side*1,y,3,side>0?-1.0:2.1,side>0?0.7:4.2,this.shadow,.5);} // hook
+      if(o.tool===3){for(let k=0;k<3;k++) this.line(x,y,x+side*(2+k),y+k-1,this.dark);} // claw
+      if(o.tool===4){this.rect(x,y-1,side*3,3,this.iron);} // hammer
+      if(o.tool===5){this.circle(x+side*2,y,2,this.dark); this.circle(x+side*2,y,1,this.brass);} // saw hub
+      if(o.tool===6){this.line(x,y,x+side*4,y,this.glow);} // welder
+      if(o.tool===7){this.rect(x,y-1,side*2,2,this.brass); this.circle(x+side*3,y,1,this.shadow);} // wrench
+      if(o.tool===8){this.arc(x+side*1,y,4,side>0?-0.8:2.4,side>0?0.8:3.9,this.edge,.35);} // shield arm
+      if(o.tool===9){this.rect(x,y-2,side*3,4,this.dark); this.set(x+side*3,y,this.glow);} // plasma pod
+    }
+  }
+
+  drawLocomotion(){
+    const style=this.locomotion.style;
+    const x1=Math.floor(this.meta.cx-this.meta.w/2)+2, x2=Math.floor(this.meta.cx+this.meta.w/2)-2, y=Math.floor(this.meta.cy+this.meta.h/2)+1;
+    const span=Math.max(1,x2-x1);
+    if(style===0){ // wheels
+      const n=Math.max(3,Math.floor(this.meta.w/4));
+      for(let i=0;i<n;i++){ const px=Math.round(x1 + span*i/Math.max(1,n-1)); this.circle(px,y+1,2,this.shadow); this.circle(px,y+1,1,this.iron); }
+      this.rect(x1,y-1,span,1,this.dark);
+    }
+    if(style===1){ // tracks
+      this.rect(x1-1,y-1,span+2,4,this.shadow); this.rect(x1,y,span,2,this.iron);
+      for(let i=0;i<6;i++) this.set(x1+2+i*Math.floor(span/6),y+1,this.light);
+    }
+    if(style===2){ // spider legs
+      const bases=[x1+2,x1+Math.floor(span*.33),x1+Math.floor(span*.66),x2-2];
+      for(let i=0;i<bases.length;i++){ const px=bases[i], s=(i%2===0?-1:1); this.line(px,y-1,px+s*2,y+4,this.dark); this.line(px+s*2,y+4,px+s*4,y+7,this.shadow); }
+    }
+    if(style===3){ // biped legs
+      this.line(this.meta.cx-3,y-2,this.meta.cx-4,y+4,this.dark); this.line(this.meta.cx-4,y+4,this.meta.cx-6,y+8,this.shadow);
+      this.line(this.meta.cx+3,y-2,this.meta.cx+4,y+4,this.dark); this.line(this.meta.cx+4,y+4,this.meta.cx+6,y+8,this.shadow);
+      this.rect(this.meta.cx-7,y+8,4,1,this.iron); this.rect(this.meta.cx+3,y+8,4,1,this.iron);
+    }
+    if(style===4){ // hover
+      this.rect(x1+2,y,span-4,1,this.glow); for(let i=0;i<4;i++) this.rect(x1+3+i*Math.floor(span/4),y+1,2,1,this.edge);
+      this.arc(this.meta.cx,y+1,Math.floor(span/2),Math.PI,Math.PI*2,this.light,.18);
+    }
+  }
+
+  drawAntennas(){
+    const o=this.antenna, baseX=this.meta.cx+o.bias, baseY=Math.floor(this.meta.turretY)-1;
+    for(let i=0;i<o.count;i++){
+      const sx=baseX + (i-(o.count-1)/2)*o.spread, h=o.height-(i%3);
+      if(o.style===0||o.style===1)this.line(sx,baseY,sx,baseY-h,this.edge);
+      if(o.style===2)this.line(sx,baseY,sx+1,baseY-h,this.edge);
+      if(o.style===3)this.line(sx,baseY,sx-1,baseY-h,this.edge);
+      if(o.style===4){this.line(sx,baseY,sx,baseY-h,this.edge); this.line(sx,baseY-h,sx+2,baseY-h-2,this.edge);}
+      if(o.style===5){this.line(sx,baseY,sx,baseY-h,this.edge); this.circle(sx,baseY-h,1,this.glow);}
+      if(o.style===6){this.line(sx,baseY,sx,baseY-h,this.edge); this.rect(sx-1,baseY-h-1,2,2,this.light);}
+      if(o.style===7){this.line(sx,baseY,sx,baseY-h,this.edge); this.arc(sx,baseY-h,3,-Math.PI,0,this.light,.5);}
+      if(o.style===8){this.line(sx,baseY,sx,baseY-h,this.edge); this.line(sx,baseY-h+2,sx+2,baseY-h+1,this.edge);}
+      if(o.style===9){this.line(sx,baseY,sx,baseY-h,this.edge); this.set(sx,baseY-h,this.glow); this.set(sx,baseY-h+1,this.edge);}
+    }
+  }
+
+  drawModules(){
+    const o=this.module, topY=Math.floor(this.meta.turretY)-2-o.elevation;
+    for(let i=0;i<o.count;i++){
+      const cx=this.meta.cx + (i-(o.count-1)/2)*o.spread, x=Math.round(cx-o.w/2), y=Math.round(topY-(i%2));
+      if(o.type===0)this.rect(x,y,o.w,o.h,this.light);
+      if(o.type===1){this.rect(x,y,o.w,o.h,this.dark); this.set(cx,y-1,this.glow);}
+      if(o.type===2)this.circle(cx,y,1+o.h,this.base);
+      if(o.type===3){this.rect(x,y,o.w,o.h,this.base); this.rect(x+1,y+1,Math.max(1,o.w-2),1,this.dark);}
+      if(o.type===4){this.rect(x,y,o.w,o.h,this.shadow); this.rect(x,y-1,o.w,1,this.light);}
+      if(o.type===5){this.rect(x,y,o.w+1,o.h,this.base); this.line(x,y+o.h,x+o.w,y-1,this.edge);}
+      if(o.type===6){this.rect(x,y,o.w,o.h,this.light); this.rect(x+1,y+1,Math.max(1,o.w-2),1,this.glow);}
+      if(o.type===7)this.arc(cx,y,2+o.w/2,-Math.PI,0,this.edge,.45);
+      if(o.type===8){this.rect(x,y,o.w,o.h,this.dark); this.rect(x+o.w,y+1,2,1,this.shadow);}
+      if(o.type===9){this.rect(x,y,o.w,o.h,this.base); this.circle(cx,y,1,this.glow);}
+    }
+  }
+
+  drawAccessories(){
+    const o=this.accessory, x1=Math.floor(this.meta.cx-this.meta.w/2), x2=Math.floor(this.meta.cx+this.meta.w/2), y1=Math.floor(this.meta.cy-this.meta.h/2), y2=Math.floor(this.meta.cy+this.meta.h/2);
+    if(o.mode===0) for(let i=0;i<o.count;i++) this.rect(x1+2+i*o.span,y1+1,2,1,o.glow?this.glow:this.light);
+    if(o.mode===1) for(let i=0;i<o.count;i++) this.rect(x1+2+i*o.span,y2-1,3,1,this.dark);
+    if(o.mode===2) for(let i=0;i<o.count;i++) this.circle(x1+3+i*o.span,y1+2+(i%2),1,this.shadow);
+    if(o.mode===3) for(let i=0;i<o.count;i++) this.line(this.meta.cx,this.meta.cy,x1+2+i*o.span,y1+1+(i%3),this.edge);
+    if(o.mode===4) this.arc(this.meta.cx,this.meta.cy,Math.max(7,Math.floor(this.meta.w/2)+2),0,Math.PI*2,o.glow?this.glow:this.edge,.6);
+    if(o.mode===5) for(let i=0;i<o.sidePods;i++){ this.rect(x1-2,y1+2+i*2,2,2,this.shadow); this.rect(x2,y1+2+i*2,2,2,this.shadow); }
+    if(o.mode===7){ this.rect(this.meta.cx-4,y1-2,8,1,this.light); this.rect(this.meta.cx-1,y1-4,2,2,this.glow); }
+    if(o.mode===8) for(let i=0;i<o.count;i++) this.set(x1+2+i*o.span,y2,this.edge);
+    if(o.mode===9){ this.line(x1+1,y1+1,x2-1,y2-1,this.edge); this.line(x2-1,y1+1,x1+1,y2-1,this.edge); }
+  }
+
+  texture(){ for(let i=0;i<26+this.r.int(18);i++){ const x=this.r.int(40),y=this.r.int(40); if(this.isObj(x,y)) this.set(x,y,this.r.pick([this.light,this.dark,this.shadow,this.edge,this.brass])); } }
+  damage(){ for(let i=0;i<7+this.r.int(10);i++){ const x=this.r.int(40),y=this.r.int(40); if(this.isObj(x,y)){ this.set(x,y,this.r.bool()?this.black:this.shadow); if(this.r.bool(.35)) this.set(x+1,y,this.dark);} } }
+  shade(){ for(let y=1;y<39;y++) for(let x=1;x<39;x++){ const c=this.p[y][x]; if(!c||this.isBg(c)) continue; if(this.isBg(this.p[y-1][x])&&this.r.bool(.25)) this.p[y][x]=MIX(c,this.light,.26); if(this.isBg(this.p[y][x-1])&&this.r.bool(.15)) this.p[y][x]=MIX(c,this.edge,.18);} }
+  outline(){ const edgePixels=[]; for(let y=1;y<39;y++) for(let x=1;x<39;x++) if(this.isObj(x,y)&&(this.isBg(this.p[y-1][x])||this.isBg(this.p[y+1][x])||this.isBg(this.p[y][x-1])||this.isBg(this.p[y][x+1]))) edgePixels.push([x,y]); for(const [x,y] of edgePixels) this.p[y][x]=MIX(this.p[y][x],this.shadow,.46); }
+  render(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    for(let y=0;y<GRID;y++) for(let x=0;x<GRID;x++){
+      ctx.fillStyle=CSS(this.p[y][x]);
+      ctx.fillRect(x*SCALE,y*SCALE,SCALE,SCALE);
+    }
+    this.drawTeamBadge();
+  }
+
+  drawTeamBadge(){
+    const cx = SCALE * 4.2;
+    const cy = SCALE * 4.2;
+    const r = SCALE * 2.75;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = this.teamHex;
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = badgeTextColor(this.teamIndex);
+    ctx.font = this.teamIndex === 10 ? 'bold 26px Arial' : 'bold 32px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(this.teamIndex), cx, cy + 1);
+    ctx.restore();
+  }
+
+  isBg(c){return !c||SAME(c,this.bgA)||SAME(c,this.bgB)}
+  isObj(x,y){return x>=0&&x<40&&y>=0&&y<40&&!this.isBg(this.p[y][x])}
+  set(x,y,c){x=Math.round(x); y=Math.round(y); if(x>=0&&x<40&&y>=0&&y<40) this.p[y][x]=c}
+  rect(x,y,w,h,c){ x=Math.round(x); y=Math.round(y); w=Math.round(w); h=Math.round(h); if(w<0){x+=w;w=-w} if(h<0){y+=h;h=-h} for(let yy=y;yy<y+h;yy++) for(let xx=x;xx<x+w;xx++) this.set(xx,yy,c); }
+  circle(cx,cy,r,c){ cx=Math.round(cx); cy=Math.round(cy); r=Math.round(r); for(let y=cy-r;y<=cy+r;y++) for(let x=cx-r;x<=cx+r;x++){ const dx=x-cx,dy=y-cy; if(dx*dx+dy*dy<=r*r) this.set(x,y,c);} }
+  line(x0,y0,x1,y1,c){ x0=Math.round(x0); y0=Math.round(y0); x1=Math.round(x1); y1=Math.round(y1); let dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1,err=dx+dy; while(true){ this.set(x0,y0,c); if(x0===x1&&y0===y1) break; const e2=2*err; if(e2>=dy){err+=dy;x0+=sx} if(e2<=dx){err+=dx;y0+=sy} } }
+  tri(x1,y1,x2,y2,x3,y3,c){ const minX=Math.floor(Math.min(x1,x2,x3)),maxX=Math.ceil(Math.max(x1,x2,x3)),minY=Math.floor(Math.min(y1,y2,y3)),maxY=Math.ceil(Math.max(y1,y2,y3)); const area=(a,b,c,d,e,f)=>Math.abs((a*(d-f)+c*(f-b)+e*(b-d))/2), A=area(x1,y1,x2,y2,x3,y3); for(let y=minY;y<=maxY;y++) for(let x=minX;x<=maxX;x++){ const A1=area(x,y,x2,y2,x3,y3),A2=area(x1,y1,x,y,x3,y3),A3=area(x1,y1,x2,y2,x,y); if(Math.abs(A-(A1+A2+A3))<.5) this.set(x,y,c);} }
+  arc(cx,cy,r,a,b,c,sq=1){ for(let t=a;t<=b;t+=.05) this.set(cx+Math.cos(t)*r,cy+Math.sin(t)*r*sq,c); }
+}
+
+let currentCode='';
+let isRenderingFromCode=false;
+
+function randomCombo(){
+  return {
+    body:Math.floor(Math.random()*BODY_COUNT),
+    turret:Math.floor(Math.random()*TURRET_COUNT),
+    weapon:Math.floor(Math.random()*WEAPON_COUNT),
+    arm:Math.floor(Math.random()*ARM_COUNT),
+    locomotion:Math.floor(Math.random()*LOCOMOTION_COUNT),
+    antenna:Math.floor(Math.random()*ANTENNA_COUNT),
+    module:Math.floor(Math.random()*MODULE_COUNT),
+    accessory:Math.floor(Math.random()*ACCESSORY_COUNT),
+    frame:Math.floor(Math.random()*FRAME_COUNT),
+    team:Math.floor(Math.random()*TEAM_COLORS.length)
+  };
+}
+
+function clampInt(v,min,max){ v=parseInt(v,10); if(Number.isNaN(v)||v<min||v>max) return null; return v; }
+function encodeCombo(c){ return `B${c.body}-T${c.turret}-W${c.weapon}-R${c.arm}-L${c.locomotion}-N${c.antenna}-U${c.module}-X${c.accessory}-F${c.frame}-C${c.team}`; }
+function decodeCombo(text){
+  if(!text) return null;
+  const clean=text.toUpperCase().replace(/\s+/g,'').trim();
+  const m=clean.match(/^B(\d+)-T(\d+)-W(\d+)-R(\d+)-L(\d+)-N(\d+)-U(\d+)-X(\d+)-F(\d+)-C(\d+)$/);
+  if(!m) return null;
+  const combo={
+    body:clampInt(m[1],0,BODY_COUNT-1), turret:clampInt(m[2],0,TURRET_COUNT-1), weapon:clampInt(m[3],0,WEAPON_COUNT-1),
+    arm:clampInt(m[4],0,ARM_COUNT-1), locomotion:clampInt(m[5],0,LOCOMOTION_COUNT-1), antenna:clampInt(m[6],0,ANTENNA_COUNT-1),
+    module:clampInt(m[7],0,MODULE_COUNT-1), accessory:clampInt(m[8],0,ACCESSORY_COUNT-1), frame:clampInt(m[9],0,FRAME_COUNT-1),
+    team:clampInt(m[10],0,TEAM_COLORS.length-1)
+  };
+  if(Object.values(combo).some(v=>v===null)) return null;
+  return combo;
+}
+
+function renderCombo(combo, syncBox=true){
+  const m=new Machine(combo);
+  m.gen();
+  currentCode=encodeCombo(combo);
+  if(syncBox){
+    isRenderingFromCode=true;
+    codeBox.value=currentCode;
+    isRenderingFromCode=false;
+  }
+  codeBox.classList.remove('bad');
+  codeBox.classList.add('ok');
+}
+function generateArt(){ renderCombo(randomCombo(), true); }
+function tryLoadFromBox(){
+  if(isRenderingFromCode) return;
+  const raw=codeBox.value.trim();
+  const combo=decodeCombo(raw);
+  if(combo){
+    renderCombo(combo, false);
+  }else{
+    codeBox.classList.remove('ok');
+    if(raw.length>0) codeBox.classList.add('bad');
+    else codeBox.classList.remove('bad');
+  }
+}
+btnGenerate.onclick=generateArt;
+codeBox.addEventListener('input', tryLoadFromBox);
+codeBox.addEventListener('paste',()=>setTimeout(tryLoadFromBox,0));
+codeBox.addEventListener('change',tryLoadFromBox);
+generateArt();
+</script>
+</body>
+</html>
